@@ -280,14 +280,14 @@ const before = `            const spatialLayer = parseInt(scalabilityMode.substr
                     spatialLayer,
                     temporalLayer,
                 });`;
-const after = `            // Mobile receivers use the full-resolution simulcast layer
-            // while retaining a lower temporal layer to limit decode work.
+const after = `            // MediaSoup layers are zero-based. Select full resolution on
+            // mobile when available, otherwise use the only layer.
             const spatialLayer = this.peer_info?.is_mobile_device
-                ? 1
-                : parseInt(scalabilityMode.substring(1, 2)); // 1/2/3
-            const temporalLayer = this.peer_info?.is_mobile_device
-                ? 1
-                : parseInt(scalabilityMode.substring(3, 4)); // 1/2/3
+                ? rtpParameters.encodings.length > 1
+                    ? 1
+                    : 0
+                : Math.max(0, Math.min(parseInt(scalabilityMode.substring(1, 2)) - 1, rtpParameters.encodings.length - 1));
+            const temporalLayer = Math.max(0, parseInt(scalabilityMode.substring(3, 4)) - 2);`;
 
             try {
                 await consumer.setPreferredLayers({

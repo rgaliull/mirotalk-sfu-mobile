@@ -32,7 +32,7 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/mirotalk-sfu-mobile:2.3.91-mobile12
+            ghcr.io/${{ github.repository_owner }}/mirotalk-sfu-mobile:2.3.91-mobile13
             ghcr.io/${{ github.repository_owner }}/mirotalk-sfu-mobile:sha-${{ github.sha }}
 
       - name: Make the container package public
