@@ -1,0 +1,300 @@
+# Mobile-first profile for MiroTalk SFU 2.3.91.
+#
+# Keep the base digest pinned: the patch is intentionally tied to the exact
+# client source that has been reviewed in production.
+FROM mirotalk/sfu@sha256:852783dbd8d33b8b6a46e27fc10f71a0f451d3d109e5db00738c2913bb55bfa1
+
+# MiroTalk does not expose these webcam encoder controls through environment
+# variables.  Apply the smallest possible source patch at image-build time:
+# - H.264 Baseline is hardware-encoded by most current iOS/Android devices;
+# - phones use one 640x360 stream at 10 fps / 700 kbps, minimizing camera
+#   encoder heat and uplink use;
+# - desktops retain two simulcast layers at 15 fps (1.2 Mbps / 350 kbps) so
+#   gallery quality remains useful;
+# - screen-sharing settings are deliberately unchanged.
+RUN node - <<'NODE'
+const fs = require('fs');
+const filename = '/src/public/js/RoomClient.js';
+let source = fs.readFileSync(filename, 'utf8');
+const before = '                if (!isRulesActive || isPresenter) {';
+const after =
+    '                if (!isRulesActive || isPresenter || Boolean(peer_token)) {';
+if (!source.includes(before)) throw new Error('Expected lobby visibility guard not found');
+source = source.replace(before, after);
+fs.writeFileSync(filename, source);
+NODE
+
+# Ensure the background grid is populated when the settings tab is opened.
+RUN node - <<'NODE'
+const fs = require('fs');
+const filename = '/src/public/js/Room.js';
+let source = fs.readFileSync(filename, 'utf8');
+const before = `    tabVirtualBackgroundBtn.onclick = (e) => {
+        rc.openTab(e, 'tabVirtualBackground');
+    };`;
+const after = `    tabVirtualBackgroundBtn.onclick = (e) => {
+        rc.openTab(e, 'tabVirtualBackground');
+        rc.showVideoImageSelector();
+    };`;
+if (!source.includes(before)) throw new Error('Expected Virtual Background tab handler not found');
+source = source.replace(before, after);
+fs.writeFileSync(filename, source);
+NODE
+
+RUN node - <<'NODE'
+const fs = require('fs');
+const filename = '/src/public/js/RoomClient.js';
+let source = fs.readFileSync(filename, 'utf8');
+const replacements = [
+  ['this.forceH264 = false;', 'this.forceH264 = true;'],
+  // mediasoup-client's produce() accepts the selected codec in the singular
+  // `codec` property. MiroTalk currently assigns it to `codecs`, which is
+  // ignored and causes the browser to fall back to router-order VP8.
+  ['params.codecs = codec;', 'params.codec = codec;'],
+  ['this.numSimulcastStreamsWebcam = 3;', 'this.numSimulcastStreamsWebcam = this.isMobileDevice ? 1 : 2;'],
+  ["this.webcamScalabilityMode = 'L3T3';", "this.webcamScalabilityMode = 'L1T3';"],
+  // This block is unique to getVideoConstraints(); screen sharing keeps its
+  // independent FPS selector and is not altered.
+  [
+    'const constraints = {\n            width: { ideal: width },\n            height: { ideal: height },\n            frameRate: { ideal: customFrameRate || 30 },\n        };',
+    'const constraints = {\n            width: { ideal: this.isMobileDevice ? 640 : width, max: this.isMobileDevice ? 640 : width },\n            height: { ideal: this.isMobileDevice ? 360 : height, max: this.isMobileDevice ? 360 : height },\n            frameRate: this.isMobileDevice\n                ? { min: 5, ideal: 10, max: 10 }\n                : { min: 5, ideal: 15, max: 15 },\n        };',
+  ],
+  ['maxBitrate: 5000000,\n                        scalabilityMode: this.webcamScalabilityMode || \'L1T3\',', 'maxBitrate: this.isMobileDevice ? 700000 : 1200000,\n                        scalabilityMode: this.webcamScalabilityMode || \'L1T3\','],
+  ['maxBitrate: 1000000,\n                        scalabilityMode: this.webcamScalabilityMode || \'L1T3\',', 'maxBitrate: 350000,\n                        scalabilityMode: this.webcamScalabilityMode || \'L1T3\','],
+];
+for (const [before, after] of replacements) {
+  if (!source.includes(before)) throw new Error(`Expected source fragment not found: ${before}`);
+  source = source.replaceAll(before, after);
+}
+fs.writeFileSync(filename, source);
+NODE
+
+# MiroTalk's stock OIDC integration authenticates the HTTP profile request but
+# does not carry that verified identity into the Socket.IO join. Bridge the
+# two paths with a short-lived, server-signed presenter token.
+RUN node - <<'NODE'
+const fs = require('fs');
+const filename = '/src/app/src/Server.js';
+let source = fs.readFileSync(filename, 'utf8');
+const duplicateNameCheck = '            if (usernameExists) return cb(\'isNameInUse\');';
+const duplicateNameCheckPatched =
+    "            if (usernameExists && process.env.ALLOW_DUPLICATE_PEER_NAMES !== 'true') return cb('isNameInUse');";
+if (!source.includes(duplicateNameCheck)) throw new Error('Expected duplicate-name check not found');
+source = source.replace(duplicateNameCheck, duplicateNameCheckPatched);
+fs.writeFileSync(filename, source);
+NODE
+
+# Keep the remaining server-side patches in separate deterministic steps.
+RUN node - <<'NODE'
+const fs = require('fs');
+const filename = '/src/app/src/Server.js';
+let source = fs.readFileSync(filename, 'utf8');
+const replacements = [
+  [
+    "const { username = 'username', password = 'password', presenter = false, expire } = token;",
+    "const { username = 'username', password = 'password', presenter = false, oidc = false, expire } = token;",
+  ],
+  [
+    "presenter: String(presenter),\n        };",
+    "presenter: String(presenter),\n            oidc: String(oidc),\n        };",
+  ],
+  [
+    "    // Authentication Callback Route\n",
+    `    // A Socket.IO join cannot read req.oidc itself. Issue a short-lived\n    // presenter token only for a verified OIDC browser session.\n    app.get('/oidc/presenter-token', OIDCAuth, (req, res) => {\n        if (!OIDC.enabled || !req.oidc?.isAuthenticated()) {\n            return res.status(401).json({ message: 'Unauthorized' });\n        }\n        return res.json({ token: encodeToken({ username: 'oidc', presenter: true, oidc: true, expire: '5m' }) });\n    });\n\n    // Authentication Callback Route\n`,
+  ],
+  [
+    `const { username, password, presenter } = checkXSS(decodeToken(peer_token));\n\n                        const isPeerValid = await isAuthPeer(username, password);\n\n                        if (!isPeerValid) {`,
+    `const { username, password, presenter, oidc } = checkXSS(decodeToken(peer_token));\n                        const oidcPresenter = oidc === 'true' && OIDC.enabled;\n                        const isPeerValid = oidcPresenter || (await isAuthPeer(username, password));\n\n                        if (!isPeerValid) {`,
+  ],
+  [
+    "const tokenPresenter = presenter === '1' || presenter === 'true';",
+    "const tokenPresenter = oidcPresenter || presenter === '1' || presenter === 'true';",
+  ],
+];
+for (const [before, after] of replacements) {
+  if (!source.includes(before)) throw new Error(`Expected Server.js fragment not found: ${before}`);
+  source = source.replace(before, after);
+}
+fs.writeFileSync(filename, source);
+NODE
+
+# Retrieve the OIDC presenter token while the page already fetches /profile.
+# Guests receive no token and follow the existing lobby path unchanged.
+RUN node - <<'NODE'
+const fs = require('fs');
+const filename = '/src/public/js/Room.js';
+let source = fs.readFileSync(filename, 'utf8');
+const before = `            if (default_name && peerNamePreference.force) {
+                window.localStorage.peer_name = default_name;
+                force_peer_name = true;
+            }
+        } else {`;
+const after = `            if (default_name && peerNamePreference.force) {
+                window.localStorage.peer_name = default_name;
+                force_peer_name = true;
+            }
+
+            const { data: presenterToken } = await axios.get('/oidc/presenter-token', { timeout: 5000 });
+            if (presenterToken?.token) {
+                peer_token = presenterToken.token;
+                window.sessionStorage.peer_token = peer_token;
+            }
+        } else {`;
+if (!source.includes(before)) throw new Error('Expected Room.js OIDC profile fragment not found');
+source = source.replace(before, after);
+fs.writeFileSync(filename, source);
+NODE
+
+# A lobby guest has not initialized WebRTC transports yet. On acceptance,
+# force the normal media path to retry camera publication even if the initial
+# device probe temporarily left isVideoAllowed=false.
+RUN node - <<'NODE'
+const fs = require('fs');
+const filename = '/src/public/js/RoomClient.js';
+let source = fs.readFileSync(filename, 'utf8');
+const replacements = [
+  [
+    '    async joinAllowed(room) {',
+    '    async joinAllowed(room, forceVideo = false) {',
+  ],
+  [
+    '    async startLocalMedia() {',
+    '    async startLocalMedia(forceVideo = false) {',
+  ],
+  [
+    '            await this.startLocalMedia();\n        }\n\n        // Ensure my own tile',
+    '            await this.startLocalMedia(forceVideo);\n        }\n\n        // Ensure my own tile',
+  ],
+  [
+    '                await this.joinAllowed(data.room);\n                bottomButtons.style.display = \'flex\';',
+    '                await this.joinAllowed(data.room, true);\n                bottomButtons.style.display = \'flex\';',
+  ],
+  [
+    '        if (this.isVideoAllowed && !this._moderator.video_start_hidden) {',
+    '        if ((this.isVideoAllowed || forceVideo) && !this._moderator.video_start_hidden) {',
+  ],
+];
+for (const [before, after] of replacements) {
+  if (!source.includes(before)) throw new Error(`Expected lobby media fragment not found: ${before}`);
+  source = source.replace(before, after);
+}
+fs.writeFileSync(filename, source);
+NODE
+
+# A guest can reach the lobby before the presenter opens the room. Stock
+# MiroTalk broadcasts that initial request only once, so replay outstanding
+# requests to a presenter immediately after its join acknowledgement.
+RUN node - <<'NODE'
+const fs = require('fs');
+const filename = '/src/app/src/Server.js';
+let source = fs.readFileSync(filename, 'utf8');
+const before = `            cb(roomJson);
+        });
+
+        socket.on('getRouterRtpCapabilities'`;
+const after = `            cb(roomJson);
+
+            if (isPresenter) {
+                room.getPeers().forEach((waitingPeer, waitingPeerId) => {
+                    if (!waitingPeer.peer_lobby) return;
+                    room.sendTo(socket.id, 'roomLobby', {
+                        peer_id: waitingPeerId,
+                        peer_name: waitingPeer.peer_name,
+                        lobby_status: 'waiting',
+                    });
+                });
+            }
+        });
+
+        socket.on('getRouterRtpCapabilities'`;
+if (!source.includes(before)) throw new Error('Expected Server.js join acknowledgement fragment not found');
+source = source.replace(before, after);
+fs.writeFileSync(filename, source);
+NODE
+
+# Log negotiation metadata needed for operational verification. This records
+# no media, credentials, participant names, IPs, or SDP.
+RUN node - <<'NODE'
+const fs = require('fs');
+const filename = '/src/app/src/Room.js';
+let source = fs.readFileSync(filename, 'utf8');
+const before = `        log.debug('Producer created successfully', {
+            producerTransportId,
+            producer_id: id,
+            peer_name: peer.peer_name,
+            kind,
+            type,
+            paused: peerProducer.paused,
+            appData: peerProducer.appData,
+            transport_state: \`ICE:\${producerTransport.iceState}, DTLS:\${producerTransport.dtlsState}\`,
+            codecs: rtpParameters.codecs?.map((c) => c.mimeType) || [],
+        });
+
+        return id;`;
+const after = `        log.debug('Producer created successfully', {
+            producerTransportId,
+            producer_id: id,
+            peer_name: peer.peer_name,
+            kind,
+            type,
+            paused: peerProducer.paused,
+            appData: peerProducer.appData,
+            transport_state: \`ICE:\${producerTransport.iceState}, DTLS:\${producerTransport.dtlsState}\`,
+            codecs: rtpParameters.codecs?.map((c) => c.mimeType) || [],
+        });
+
+        if (kind === 'video') {
+            const codec = rtpParameters.codecs?.find((entry) => entry.mimeType?.toLowerCase().startsWith('video/'));
+            log.info('Video producer telemetry', {
+                room_id: this.id,
+                producer_id: id,
+                codec: codec?.mimeType || null,
+                profile_level_id: codec?.parameters?.['profile-level-id'] || null,
+                packetization_mode: codec?.parameters?.['packetization-mode'] || null,
+                encodings: rtpParameters.encodings?.map((encoding) => ({
+                    max_bitrate: encoding.maxBitrate || null,
+                    scale_resolution_down_by: encoding.scaleResolutionDownBy || null,
+                    scalability_mode: encoding.scalabilityMode || null,
+                })) || [],
+            });
+        }
+
+        return id;`;
+if (!source.includes(before)) throw new Error('Expected Room.js producer fragment not found');
+source = source.replace(before, after);
+fs.writeFileSync(filename, source);
+NODE
+
+# MediaSoup selects the highest consumer layers by default.  A mobile receiver
+# needs the lowest available spatial layer and no more than the second temporal
+# layer; this caps remote-video decode work without changing desktop quality.
+RUN node - <<'NODE'
+const fs = require('fs');
+const filename = '/src/app/src/Peer.js';
+let source = fs.readFileSync(filename, 'utf8');
+const before = `            const spatialLayer = parseInt(scalabilityMode.substring(1, 2)); // 1/2/3
+            const temporalLayer = parseInt(scalabilityMode.substring(3, 4)); // 1/2/3
+
+            try {
+                await consumer.setPreferredLayers({
+                    spatialLayer,
+                    temporalLayer,
+                });`;
+const after = `            // Mobile receivers use the full-resolution simulcast layer
+            // while retaining a lower temporal layer to limit decode work.
+            const spatialLayer = this.peer_info?.is_mobile_device
+                ? 1
+                : parseInt(scalabilityMode.substring(1, 2)); // 1/2/3
+            const temporalLayer = this.peer_info?.is_mobile_device
+                ? 1
+                : parseInt(scalabilityMode.substring(3, 4)); // 1/2/3
+
+            try {
+                await consumer.setPreferredLayers({
+                    spatialLayer,
+                    temporalLayer,
+                });`;
+if (!source.includes(before)) throw new Error('Expected Peer.js layer-selection fragment not found');
+source = source.replace(before, after);
+fs.writeFileSync(filename, source);
+NODE

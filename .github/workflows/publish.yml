@@ -1,0 +1,44 @@
+name: Publish MiroTalk mobile profile
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ secrets.GHCR_USERNAME }}
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      - name: Build and publish immutable mobile profile
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.mobile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/mirotalk-sfu-mobile:2.3.91-mobile12
+            ghcr.io/${{ github.repository_owner }}/mirotalk-sfu-mobile:sha-${{ github.sha }}
+
+      - name: Make the container package public
+        env:
+          GH_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        run: >-
+          gh api --method PATCH
+          /user/packages/container/mirotalk-sfu-mobile
+          -f visibility=public
