@@ -21,8 +21,8 @@ jobs:
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
-          username: ${{ secrets.GHCR_USERNAME }}
-          password: ${{ secrets.GHCR_TOKEN }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and publish immutable mobile profile
         uses: docker/build-push-action@v7
@@ -32,13 +32,5 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/mirotalk-sfu-mobile:2.3.91-mobile13
-            ghcr.io/${{ github.repository_owner }}/mirotalk-sfu-mobile:sha-${{ github.sha }}
-
-      - name: Make the container package public
-        env:
-          GH_TOKEN: ${{ secrets.GHCR_TOKEN }}
-        run: >-
-          gh api --method PATCH
-          /user/packages/container/mirotalk-sfu-mobile
-          -f visibility=public
+            ghcr.io/${{ github.repository_owner }}/mirotalk-sfu-public:2.3.91-mobile13
+            ghcr.io/${{ github.repository_owner }}/mirotalk-sfu-public:sha-${{ github.sha }}
