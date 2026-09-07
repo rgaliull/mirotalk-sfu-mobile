@@ -272,7 +272,7 @@ RUN node - <<'NODE'
 const fs = require('fs');
 const filename = '/src/app/src/Peer.js';
 let source = fs.readFileSync(filename, 'utf8');
-const before = /            const spatialLayer = parseInt\(scalabilityMode\.substring\(1, 2\)\); \/\/ 1\/2\/3\n            const temporalLayer = parseInt\(scalabilityMode\.substring\(3, 4\)\); \/\/ 1\/2\/3\n\n            try \{\n                await consumer\.setPreferredLayers\(\{\n                    spatialLayer,\n                    temporalLayer,\n                \}\);/;
+const before = /const spatialLayer = parseInt\(scalabilityMode[\s\S]*?await consumer\.setPreferredLayers\(\{\s*spatialLayer,\s*temporalLayer,\s*\}\);/;
 const after = `            // MediaSoup layers are zero-based. Select full resolution on
             // mobile when available, otherwise use the only layer.
             const spatialLayer = this.peer_info?.is_mobile_device
