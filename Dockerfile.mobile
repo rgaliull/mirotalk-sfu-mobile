@@ -272,7 +272,6 @@ RUN node - <<'NODE'
 const fs = require('fs');
 const filename = '/src/app/src/Peer.js';
 let source = fs.readFileSync(filename, 'utf8');
-const before = /const spatialLayer = parseInt\(scalabilityMode[\s\S]*?await consumer\.setPreferredLayers\(\{\s*spatialLayer,\s*temporalLayer,\s*\}\);/;
 const after = `            // MediaSoup layers are zero-based. Select full resolution on
             // mobile when available, otherwise use the only layer.
             const spatialLayer = this.peer_info?.is_mobile_device
@@ -287,7 +286,15 @@ const after = `            // MediaSoup layers are zero-based. Select full resol
                     spatialLayer,
                     temporalLayer,
                 });`;
-if (!before.test(source)) throw new Error('Expected Peer.js layer-selection fragment not found');
-source = source.replace(before, after);
+const consumerMarker = 'await consumer.setPreferredLayers({';
+const consumerIndex = source.indexOf(consumerMarker);
+const spatialIndex = source.lastIndexOf('            const spatialLayer', consumerIndex);
+const blockEnd = source.indexOf('                });', consumerIndex);
+if (consumerIndex < 0 || spatialIndex < 0 || blockEnd < 0) {
+  throw new Error('Expected Peer.js consumer layer block not found');
+}
+const blockStart = source.lastIndexOf('\n', spatialIndex) + 1;
+const replacementEnd = blockEnd + '                });'.length;
+source = source.slice(0, blockStart) + after + source.slice(replacementEnd);
 fs.writeFileSync(filename, source);
 NODE
