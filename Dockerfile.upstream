@@ -1,0 +1,3 @@
+# Upstream MiroTalk SFU with the native MediaSoup layer-selection fix.
+# Keep the amd64 digest pinned for reproducible production deployment.
+FROM mirotalk/sfu@sha256:5dde099186a2204685b85834d405ed8324a392fb4fec64dfda938ca40d729b7b
