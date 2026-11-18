@@ -1,0 +1,33 @@
+name: Publish vendored MiroTalk
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile.vendored
+      - vendor/**
+      - .github/workflows/publish-vendored.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.vendored
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/rgaliull/mirotalk-sfu-vendored:sha-${{ github.sha }}

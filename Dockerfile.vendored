@@ -1,0 +1,9 @@
+# Experimental build: do not deploy until offline tests pass.
+FROM mirotalk/sfu@sha256:857386de06c06925d52fc2657d89cec330149b76a85231f1045e214b32214aad AS upstream
+FROM python:3.13-alpine AS assets
+COPY --from=upstream /src/public /src/public
+COPY vendor/ /tmp/mirotalk-vendor/
+RUN python /tmp/mirotalk-vendor/build_vendor.py
+FROM upstream
+COPY --from=assets /src/public /src/public
+ENV UI_TRANSLATION_MODE=native STATS_ENABLED=false
